@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the MainAI-Bot using config.json from the wizard."""
+"""Start the MineAI bot using config.json from the wizard."""
 
 from __future__ import annotations
 
@@ -28,7 +28,8 @@ def start_bot(cfg: dict | None = None) -> int:
         f"{cfg['mc_host']}:{cfg['mc_port']}  as {cfg['bot_username']}"
     )
     print(
-        f"Ollama {cfg['ollama_host']}:{cfg['ollama_port']}  model {cfg['ollama_model']}"
+        f"LLM {cfg.get('llm_studio')} {cfg['llm_host']}:{cfg['llm_port']}  "
+        f"model {cfg['llm_model']}"
     )
     print(f"Script: {script}")
     result = subprocess.run([sys.executable, str(script)], cwd=str(settings.ROOT))

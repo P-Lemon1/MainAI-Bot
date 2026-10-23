@@ -2,7 +2,7 @@
 from javascript import require, On
 import json
 import re
-import requests
+
 import queue
 import sys
 import threading
@@ -13,10 +13,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 import settings
+import chat_inbox
+import llm_client
 
 _cfg = settings.require_config()
-OLLAMA_URL = settings.ollama_url(_cfg)
-OLLAMA_MODEL = _cfg['ollama_model']
 
 mineflayer = require('mineflayer')
 
@@ -176,27 +176,20 @@ def parse_operation_json(raw_text):
 
 
 def call_ollama(system_prompt, username, clean_message, force_json=False):
-    payload = {
-        'model': OLLAMA_MODEL,
-        'messages': [
-            {'role': 'system', 'content': system_prompt},
-            *snapshot_history(),
-            {'role': 'user', 'content': f'{username}: {clean_message}'}
-        ],
-        'options': {
-            'num_ctx': 1024,
-            'num_gpu': 99
-        },
-        'stream': False
-    }
-    if force_json:
-        payload['format'] = 'json'
-
-    res = requests.post(OLLAMA_URL, json=payload, timeout=20)
-    if res.status_code != 200:
-        print(f'Ollama API Error: status {res.status_code}')
+    try:
+        return llm_client.complete_messages(
+            _cfg,
+            [
+                {'role': 'system', 'content': system_prompt},
+                *snapshot_history(),
+                {'role': 'user', 'content': f'{username}: {clean_message}'},
+            ],
+            json_mode=force_json,
+            timeout=20,
+        )
+    except Exception as e:
+        print(f'LLM error: {e}')
         return None
-    return res.json()['message']['content']
 
 
 def process_ai_request(username, clean_message, whisper, clear, operation):
@@ -289,17 +282,10 @@ worker_thread.start()
 def handle_spawn(*args):
     print(f'Chat bot joined Minecraft {MC_VERSION}!')
     bot.chat('/gamemode spectator')
-    bot.chat('Привет! Пиши мне с точки, например .привет {-m}')
+    bot.chat(settings.spawn_greeting(_cfg))
 
 
-@On(bot, 'chat')
-def handle_chat(this, username, message, *args):
-    enqueue_user_message(username, message, from_whisper=False)
-
-
-@On(bot, 'whisper')
-def handle_whisper(this, username, message, *args):
-    enqueue_user_message(username, message, from_whisper=True)
+chat_inbox.bind(bot, lambda username, message: enqueue_user_message(username, message, False))
 
 
 @On(bot, 'error')

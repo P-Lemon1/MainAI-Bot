@@ -1,4 +1,4 @@
-"""Autonomous Ollama brain for Mineflayer companions.
+"""Autonomous LLM brain for Mineflayer companions.
 
 The network keeps deciding what to do from world state, not only from chat.
 Player chat is a high-priority order. Reflex combat stays in each ScriptAI.
@@ -13,24 +13,46 @@ import threading
 import time
 import traceback
 
-import requests
+import llm_client
+import settings
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-OLLAMA_MODEL = "qwen2.5-coder:14b"
+LLM_CFG = {}
+CHAT_LANGUAGE = "ru"
 THINK_EVERY_SEC = 14
 SPEAK_AUTONOMOUS_EVERY_SEC = 50
 JSON_FALLBACK_REPLY = "Не понял тебя, повтори короче."
+JSON_FALLBACK_REPLY_EN = "I didn't catch that, say it shorter."
 
 
 def configure(cfg):
-    """Point the brain at the Ollama host/port/model from config.json."""
-    global OLLAMA_URL, OLLAMA_MODEL
-    host = str((cfg or {}).get("ollama_host") or "127.0.0.1").strip()
-    port = int((cfg or {}).get("ollama_port") or 11434)
-    model = str((cfg or {}).get("ollama_model") or "qwen2.5-coder:14b").strip()
-    OLLAMA_URL = f"http://{host}:{port}/api/chat"
-    OLLAMA_MODEL = model
-    print(f"Ollama: {OLLAMA_URL}  model={OLLAMA_MODEL}")
+    """Point the brain at the LLM studio from config.json."""
+    global LLM_CFG, CHAT_LANGUAGE
+    LLM_CFG = settings.normalize(cfg or {})
+    lang = str(LLM_CFG.get("language") or "ru").strip().lower()
+    CHAT_LANGUAGE = "en" if lang.startswith("en") else "ru"
+    print(
+        f"LLM {LLM_CFG.get('llm_studio')} {LLM_CFG.get('llm_api')} "
+        f"{LLM_CFG.get('llm_host')}:{LLM_CFG.get('llm_port')} "
+        f"model={LLM_CFG.get('llm_model')!r}  chat_lang={CHAT_LANGUAGE}"
+    )
+
+
+def fallback_reply():
+    if CHAT_LANGUAGE == "en":
+        return JSON_FALLBACK_REPLY_EN
+    return JSON_FALLBACK_REPLY
+
+
+def reply_language_rule():
+    if CHAT_LANGUAGE == "en":
+        return (
+            "reply is always a short English sentence for in-game chat. "
+            "For PLAYER CHAT, reply MUST be non-empty."
+        )
+    return (
+        "reply is always a short Russian sentence for in-game chat. "
+        "Для PLAYER CHAT поле reply обязательно непустое."
+    )
 
 
 SURVIVAL_ACTIONS = (
@@ -61,14 +83,14 @@ SURVIVAL_PROMPT = """You are an autonomous Minecraft survival companion (Minefla
 You MUST answer with STRICT JSON only. No markdown, no code fences, no extra text.
 JSON:
 {
-  "reply": "<short Russian sentence, or empty string>",
+  "reply": "<short in-game chat sentence, or empty string if autonomous>",
   "action": "collect" | "pvp_attack" | "follow" | "stop" | "craft" | "explore" | "none",
   "target": "<minecraft id or player name>",
   "count": <positive integer>
 }
 
 English minecraft ids only in target (oak_log, iron_ore, zombie, stick, wooden_pickaxe).
-reply is always Russian for in-game chat.
+REPLY_LANGUAGE_RULE
 
 How you think:
 - You run even when nobody is chatting. Then source is AUTONOMOUS.
@@ -91,12 +113,13 @@ SIMPLE_PROMPT = """You are an autonomous Minecraft companion (Mineflayer).
 You MUST answer with STRICT JSON only. No markdown, no extra text.
 JSON:
 {
-  "reply": "<short Russian sentence, or empty string>",
+  "reply": "<short in-game chat sentence, or empty string if autonomous>",
   "action": "follow" | "stop" | "mine_tree" | "look" | "jump" | "drop_item" | "attack" | "step_back" | "step_forward" | "explore" | "none",
   "target": "<optional player or mob name>"
 }
 
-reply is Russian. target uses English minecraft ids when needed.
+REPLY_LANGUAGE_RULE
+target uses English minecraft ids when needed.
 
 You think even without chat (AUTONOMOUS). Then usually reply="".
 PLAYER CHAT is an order — obey it.
@@ -178,20 +201,13 @@ def parse_ai_response(raw_text, valid_actions):
 
 
 def call_ollama(system_prompt, user_content, timeout=25):
-    payload = {
-        "model": OLLAMA_MODEL,
-        "format": "json",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "options": {"num_ctx": 1536, "num_gpu": 99},
-        "stream": False,
-    }
-    res = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
-    if res.status_code != 200:
-        raise RuntimeError(f"Ollama status {res.status_code}: {res.text[:200]}")
-    return res.json()["message"]["content"]
+    return llm_client.complete(
+        LLM_CFG,
+        system_prompt,
+        user_content,
+        json_mode=True,
+        timeout=timeout,
+    )
 
 
 def _safe_list(js_obj, limit=24):
@@ -335,7 +351,8 @@ class CompanionBrain:
         self.on_stop = on_stop
         self.busy = busy
         self.valid = SURVIVAL_ACTIONS if mode == "survival" else SIMPLE_ACTIONS
-        self.prompt = SURVIVAL_PROMPT if mode == "survival" else SIMPLE_PROMPT
+        base = SURVIVAL_PROMPT if mode == "survival" else SIMPLE_PROMPT
+        self.prompt = base.replace("REPLY_LANGUAGE_RULE", reply_language_rule())
         self.jobs = queue.Queue()
         self.standing_order = None
         self.last_player = None
@@ -422,7 +439,8 @@ class CompanionBrain:
             user = (
                 "[PLAYER CHAT — this is an order]\n"
                 f"{world}\n"
-                f"Player {username} says: {message}"
+                f"Player {username} says: {message}\n"
+                "You MUST put a short non-empty reply in JSON (answer or confirm the order)."
             )
 
         raw = call_ollama(self.prompt, user)
@@ -440,9 +458,8 @@ class CompanionBrain:
         speaker = username or self.last_player
         if not autonomous:
             if not reply:
-                reply = JSON_FALLBACK_REPLY if action == "none" else ""
-            if reply:
-                self.speak(reply)
+                reply = fallback_reply()
+            self.speak(reply)
         else:
             now = time.time()
             important = action in ("pvp_attack", "attack") or (

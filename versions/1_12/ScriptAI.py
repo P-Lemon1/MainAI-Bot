@@ -13,6 +13,7 @@ if str(_MINEAI) not in sys.path:
     sys.path.insert(0, str(_MINEAI))
 import companion_brain
 import settings
+import chat_inbox
 
 _cfg = settings.require_config()
 companion_brain.configure(_cfg)
@@ -359,7 +360,7 @@ def handle_spawn(*args):
     if brain is not None:
         brain.start()
     try:
-        safe_chat('Ya sam reshayu chto delat. Pishi prikaz v chat.')
+        safe_chat(settings.spawn_greeting(_cfg))
     except Exception as e:
         print(f'Spawn chat error: {e}')
 
@@ -379,11 +380,10 @@ def handle_end(this, reason, *args):
     print(f'Bot disconnected: {format_js_error(reason)}')
 
 
-@On(bot, 'chat')
-def handle_chat(this, username, message, *args):
-    if username == str(bot.username):
-        return
-
+def _on_player_chat(username, message):
     print(f'{username}: {message}')
     if brain is not None:
         brain.enqueue_chat(username, message)
+
+
+chat_inbox.bind(bot, _on_player_chat)

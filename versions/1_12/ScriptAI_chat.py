@@ -1,7 +1,7 @@
 
 from javascript import require, On
 import re
-import requests
+
 import queue
 import sys
 import threading
@@ -12,10 +12,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 import settings
+import chat_inbox
+import llm_client
 
 _cfg = settings.require_config()
-OLLAMA_URL = settings.ollama_url(_cfg)
-OLLAMA_MODEL = _cfg['ollama_model']
 
 mineflayer = require('mineflayer')
 
@@ -90,26 +90,18 @@ def process_ai_request(username, clean_message, whisper):
     """One Ollama call plus chat/whisper reply. Runs only on the worker thread."""
     append_history('user', f'{username}: {clean_message}')
 
-    payload = {
-        'model': OLLAMA_MODEL,
-        'messages': [
-            {'role': 'system', 'content': SYSTEM_PROMPT},
-            *snapshot_history()
-        ],
-        'options': {
-            'num_ctx': 1024,
-            'num_gpu': 99
-        },
-        'stream': False
-    }
-
-    res = requests.post(OLLAMA_URL, json=payload, timeout=20)
-
-    if res.status_code != 200:
-        print(f'Ollama API Error: status {res.status_code}')
+    try:
+        raw_reply = llm_client.complete_messages(
+            _cfg,
+            [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                *snapshot_history(),
+            ],
+            timeout=20,
+        )
+    except Exception as e:
+        print(f'LLM error: {e}')
         return
-
-    raw_reply = res.json()['message']['content']
     bot_reply = str(raw_reply).strip() if raw_reply else FALLBACK_REPLY
     if not bot_reply:
         bot_reply = FALLBACK_REPLY
@@ -142,14 +134,10 @@ worker_thread.start()
 def handle_spawn(*args):
     print(f'Chat bot joined Minecraft {MC_VERSION}!')
     bot.chat('/gamemode spectator')
-    bot.chat('Привет! Пиши мне с точки, например .привет')
+    bot.chat(settings.spawn_greeting(_cfg))
 
 
-@On(bot, 'chat')
-def handle_chat(this, username, message, *args):
-    if username == str(bot.username):
-        return
-
+def _on_player_chat(username, message):
     if not isinstance(message, str) or not message.startswith('.'):
         return
 
@@ -161,6 +149,9 @@ def handle_chat(this, username, message, *args):
 
     request_queue.put((username, prompt_text, whisper))
     print(f'Queued request from {username} (queue size: {request_queue.qsize()})')
+
+
+chat_inbox.bind(bot, _on_player_chat)
 
 
 @On(bot, 'error')

@@ -1,4 +1,4 @@
-"""Load and save MainAI-Bot runtime settings (wizard -> config.json -> bots)."""
+"""Load and save MineAI runtime settings (wizard -> config.json -> bots)."""
 
 from __future__ import annotations
 
@@ -50,23 +50,50 @@ VERSIONS = {
 
 BOT_KINDS = ("companion", "chat")
 
+PROJECT_NAME = "MainAI-Bot"
+DEFAULT_NICK = "MainAI"
+
 DEFAULTS = {
     "language": "ru",
     "mc_version": "1.21.6",
     "bot_kind": "companion",
     "mc_host": "localhost",
     "mc_port": 25565,
-    "bot_username": "MainAI",
+    "bot_username": DEFAULT_NICK,
+    "llm_studio": "ollama",
+    "llm_api": "ollama",
+    "llm_host": "127.0.0.1",
+    "llm_port": 11434,
+    "llm_model": "",
     "ollama_host": "127.0.0.1",
     "ollama_port": 11434,
-    "ollama_model": "qwen2.5-coder:14b",
+    "ollama_model": "",
 }
+
+LLM_APIS = ("ollama", "openai")
 
 
 def ollama_url(cfg: dict) -> str:
-    host = str(cfg.get("ollama_host") or "127.0.0.1").strip()
-    port = int(cfg.get("ollama_port") or 11434)
-    return f"http://{host}:{port}/api/chat"
+    """Legacy helper. Prefer llm_client + llm_host/llm_port."""
+    cfg = normalize(cfg)
+    if str(cfg.get("llm_api") or "ollama") == "openai":
+        return f"http://{cfg['llm_host']}:{int(cfg['llm_port'])}/v1/chat/completions"
+    return f"http://{cfg['llm_host']}:{int(cfg['llm_port'])}/api/chat"
+
+
+def spawn_greeting(cfg: dict | None = None) -> str:
+    """First line the bot says after joining, using wizard language and nick."""
+    cfg = normalize(cfg or load())
+    name = str(cfg.get("bot_username") or DEFAULT_NICK).strip() or DEFAULT_NICK
+    lang = str(cfg.get("language") or "ru")
+    kind = str(cfg.get("bot_kind") or "companion")
+    if lang == "en":
+        if kind == "chat":
+            return f"Hello, I am {name}, your chat bot."
+        return f"Hello, I am {name}, your companion."
+    if kind == "chat":
+        return f"Привет, я {name}, твой чат-бот."
+    return f"Привет, я {name}, твой компаньон."
 
 
 def script_path(cfg: dict) -> Path:
@@ -109,16 +136,28 @@ def normalize(data: dict) -> dict:
     kind = str(cfg.get("bot_kind") or "companion").strip().lower()
     cfg["bot_kind"] = kind if kind in BOT_KINDS else "companion"
 
-    cfg["mc_host"] = str(cfg.get("mc_host") or "localhost").strip() or "localhost"
+    cfg["mc_host"] = _host(cfg.get("mc_host"), "localhost")
     cfg["mc_port"] = _port(cfg.get("mc_port"), 25565)
-    cfg["bot_username"] = str(cfg.get("bot_username") or "MainAI").strip() or "MainAI"
-
-    cfg["ollama_host"] = str(cfg.get("ollama_host") or "127.0.0.1").strip() or "127.0.0.1"
-    cfg["ollama_port"] = _port(cfg.get("ollama_port"), 11434)
-    cfg["ollama_model"] = (
-        str(cfg.get("ollama_model") or "qwen2.5-coder:14b").strip()
-        or "qwen2.5-coder:14b"
+    cfg["bot_username"] = (
+        str(cfg.get("bot_username") or DEFAULT_NICK).strip() or DEFAULT_NICK
     )
+
+    llm_host = cfg.get("llm_host") or cfg.get("ollama_host") or "127.0.0.1"
+    llm_port = cfg.get("llm_port") if cfg.get("llm_port") not in (None, "") else cfg.get("ollama_port")
+    llm_model = str(cfg.get("llm_model") or cfg.get("ollama_model") or "").strip()
+    studio = str(cfg.get("llm_studio") or "ollama").strip().lower() or "ollama"
+    api = str(cfg.get("llm_api") or "").strip().lower()
+    if api not in LLM_APIS:
+        api = "openai" if studio not in ("ollama", "") else "ollama"
+
+    cfg["llm_studio"] = studio
+    cfg["llm_api"] = api
+    cfg["llm_host"] = _host(llm_host, "127.0.0.1")
+    cfg["llm_port"] = _port(llm_port, 11434 if api == "ollama" else 1234)
+    cfg["llm_model"] = llm_model
+    cfg["ollama_host"] = cfg["llm_host"]
+    cfg["ollama_port"] = cfg["llm_port"]
+    cfg["ollama_model"] = cfg["llm_model"]
 
     lang = str(cfg.get("language") or "ru").strip().lower()
     cfg["language"] = "en" if lang.startswith("en") else "ru"
@@ -131,6 +170,13 @@ def save(cfg: dict) -> Path:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     return CONFIG_PATH
+
+
+def _host(value, default: str) -> str:
+    host = str(value or "").strip()
+    if not host or host.isdigit():
+        return default
+    return host
 
 
 def _port(value, default: int) -> int:

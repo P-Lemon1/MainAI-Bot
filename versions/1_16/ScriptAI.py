@@ -14,6 +14,7 @@ if str(_MINEAI) not in sys.path:
     sys.path.insert(0, str(_MINEAI))
 import companion_brain
 import settings
+import chat_inbox
 
 _cfg = settings.require_config()
 companion_brain.configure(_cfg)
@@ -538,19 +539,16 @@ def handle_spawn(*args):
     setup_auto_eat()
     if brain is not None:
         brain.start()
-    bot.chat('Привет! Я сам решаю, что делать: добывать, крафтить, драться и ходить с тобой. Можешь просто дать приказ в чат.')
+    bot.chat(settings.spawn_greeting(_cfg))
 
 
-@On(bot, 'chat')
-def handle_chat(this, username, message, *args):
-    if username == str(bot.username):
-        return
-    if not isinstance(message, str):
-        return
-
+def _on_player_chat(username, message):
     print(f'{username}: {message}')
     if brain is not None:
         brain.enqueue_chat(username, message)
+
+
+chat_inbox.bind(bot, _on_player_chat)
 
 
 @On(bot, 'entityHurt')

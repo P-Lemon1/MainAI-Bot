@@ -5,7 +5,9 @@
   "mc_host": "localhost",
   "mc_port": 25565,
   "bot_username": "MainAI",
-  "ollama_host": "127.0.0.1",
-  "ollama_port": 11434,
-  "ollama_model": "qwen2.5-coder:14b"
+  "llm_studio": "ollama",
+  "llm_api": "ollama",
+  "llm_host": "127.0.0.1",
+  "llm_port": 11434,
+  "llm_model": "qwen2.5-coder:14b"
 }
