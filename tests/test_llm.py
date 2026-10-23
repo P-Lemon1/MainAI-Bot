@@ -83,6 +83,11 @@ class StudioDetectTests(unittest.TestCase):
         self.assertNotIn("C:\\\\Users\\\\PC", blob)
         self.assertNotIn("programm\\\\ollama", blob)
 
+    def test_lmstudio_leftover_folder_is_not_enough(self):
+        spec = next(s for s in llm_studio.STUDIOS if s["id"] == "lmstudio")
+        self.assertFalse(spec.get("dirs"))
+        self.assertTrue(any("LM Studio.exe" in exe[1] for exe in spec["exe"]))
+
 
 class SourceHygieneTests(unittest.TestCase):
     FORBIDDEN = (

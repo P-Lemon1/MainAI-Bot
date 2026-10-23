@@ -43,7 +43,6 @@ STUDIOS = (
             ("LOCALAPPDATA", r"Programs\LM Studio\LM Studio.exe"),
             ("LOCALAPPDATA", r"LM-Studio\LM Studio.exe"),
         ),
-        "dirs": (("USERPROFILE", ".lmstudio"),),
     },
     {
         "id": "llamacpp",
@@ -282,6 +281,99 @@ def _dir_exists(spec: tuple[str, str]) -> bool:
     return bool(path and path.exists())
 
 
+def _fixed_drive_roots() -> list[Path]:
+    roots: list[Path] = []
+    for var in ("USERPROFILE", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        value = os.environ.get(var)
+        if value:
+            roots.append(Path(value))
+    if sys.platform == "win32":
+        import string
+
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            try:
+                if drive.exists():
+                    roots.append(drive)
+            except OSError:
+                continue
+    else:
+        roots.extend([Path.home(), Path("/opt"), Path("/usr/local")])
+    # unique, keep order
+    out: list[Path] = []
+    seen = set()
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
+_LLAMA_SERVER_REL = (
+    Path("llama.cpp") / "bin" / "llama-server.exe",
+    Path("llama.cpp") / "llama-server.exe",
+    Path("llama.cpp") / "build" / "bin" / "Release" / "llama-server.exe",
+    Path("llama.cpp") / "build" / "bin" / "llama-server.exe",
+    Path("programm") / "llama.cpp" / "bin" / "llama-server.exe",
+    Path("program") / "llama.cpp" / "bin" / "llama-server.exe",
+    Path("tools") / "llama.cpp" / "bin" / "llama-server.exe",
+    Path("ai") / "llama.cpp" / "bin" / "llama-server.exe",
+    Path("bin") / "llama-server.exe",
+)
+
+
+def find_llama_server() -> Path | None:
+    for name in ("llama-server", "llama-server.exe"):
+        hit = shutil.which(name)
+        if hit:
+            return Path(hit)
+    for root in _fixed_drive_roots():
+        for rel in _LLAMA_SERVER_REL:
+            cand = root / rel
+            try:
+                if cand.is_file():
+                    return cand
+            except OSError:
+                continue
+    return None
+
+
+def _llama_root(exe: Path) -> Path:
+    parent = exe.resolve().parent
+    if parent.name.lower() == "bin":
+        return parent.parent
+    return parent
+
+
+def gguf_models(root: Path) -> list[dict]:
+    folders = [root / "models", root]
+    found: list[dict] = []
+    seen = set()
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        patterns = ("*.gguf", "*/*.gguf")
+        for pattern in patterns:
+            for path in folder.glob(pattern):
+                if not path.is_file():
+                    continue
+                key = path.name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0
+                found.append({"name": path.stem, "size": size})
+        if found:
+            break
+    found.sort(key=lambda x: x["name"].lower())
+    return found
+
+
 def _studio_installed(spec: dict, proc_names: set[str]) -> bool:
     for name in spec.get("which") or ():
         if shutil.which(name):
@@ -337,8 +429,12 @@ def discover(host: str = "127.0.0.1") -> list[dict]:
             old["port"] = item["port"]
             old["host"] = item.get("host") or old.get("host")
 
+    llama_exe = find_llama_server()
+
     for spec in STUDIOS:
         installed = _studio_installed(spec, proc_names)
+        if spec["id"] == "llamacpp" and llama_exe is not None:
+            installed = True
         running = False
         models = []
         api = spec["api"]
@@ -354,6 +450,8 @@ def discover(host: str = "127.0.0.1") -> list[dict]:
             port_used = port
             models = probed or []
             break
+        if spec["id"] == "llamacpp" and llama_exe is not None and not models:
+            models = gguf_models(_llama_root(llama_exe))
         if installed or running:
             remember(
                 {
@@ -422,16 +520,17 @@ def discover(host: str = "127.0.0.1") -> list[dict]:
 
 def status_line(item: dict, lang: str = "en") -> str:
     bits = []
+    n = len(item.get("models") or [])
     if item.get("running"):
         bits.append("running" if lang == "en" else "запущена")
         bits.append(f"{item.get('host')}:{item.get('port')}")
-        n = len(item.get("models") or [])
+    elif item.get("installed"):
+        bits.append("installed, server off" if lang == "en" else "установлена, сервер выключен")
+    if n:
         if lang == "en":
             bits.append(f"{n} model" + ("" if n == 1 else "s"))
         else:
-            bits.append(f"{n} модел" + ("ь" if n == 1 else "и"))
-    elif item.get("installed"):
-        bits.append("installed, server off" if lang == "en" else "установлена, сервер выключен")
+            bits.append(f"{n} модел" + ("ь" if n == 1 else "ей" if n >= 5 else "и"))
     return f"{item['name']}  —  " + ", ".join(bits)
 
 
@@ -483,5 +582,38 @@ def try_start(item: dict) -> bool:
 
         time.sleep(2.0)
         kind, _models = probe_any(host, port or 1234)
+        return kind is not None
+    if sid == "llamacpp":
+        exe = find_llama_server()
+        if not exe:
+            return False
+        root = _llama_root(exe)
+        helper = root / "start-llama-serve.cmd"
+        try:
+            if helper.is_file():
+                subprocess.Popen(
+                    [str(helper)],
+                    cwd=str(root),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    shell=True,
+                )
+            else:
+                args = [str(exe), "--host", "127.0.0.1", "--port", str(port or 8080)]
+                ggufs = list((root / "models").glob("*.gguf")) if (root / "models").is_dir() else []
+                if ggufs:
+                    args.extend(["-m", str(ggufs[0])])
+                subprocess.Popen(
+                    args,
+                    cwd=str(root),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            return False
+        import time
+
+        time.sleep(2.0)
+        kind, _models = probe_any(host, port or 8080)
         return kind is not None
     return False
